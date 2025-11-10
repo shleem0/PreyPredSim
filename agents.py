@@ -2,10 +2,13 @@ from mesa.discrete_space import CellAgent, FixedAgent
 import math
 
 import constants
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
 import numpy as np
+
+import os.path
 
 #---Helper functions---
 def normalise(x, y):
@@ -29,8 +32,8 @@ class LandPreyNet(nn.Module):
 
     def forward(self, x):
 
-        x = func.relu(self.l1(x))
-        x = func.relu(self.l2(x))
+        x = func.tanh(self.l1(x))
+        x = func.tanh(self.l2(x))
 
         logits = self.out(x)
         return logits
@@ -61,7 +64,7 @@ class Animal(CellAgent):
     """The base animal class."""
 
     def __init__(
-        self, model, age, rep_count, energy, hydration, p_reproduce, max_energy, max_hydration, energy_from_food, hydration_from_water, cell=None, 
+        self, model, age, energy, hydration, p_reproduce, max_energy, max_hydration, energy_from_food, hydration_from_water, cell=None, 
         vision_range=0, vision_angle=0, vision=[], heading=(0,1), nn=None
     ):
         """Initialize an animal.
@@ -76,7 +79,9 @@ class Animal(CellAgent):
 
         super().__init__(model)
         self.age = age
-        self.rep_count = rep_count
+        self.rep_count = 0
+        self.drank = 0
+        self.moves = 0
         self.energy = energy
         self.hydration = hydration
         self.p_reproduce = p_reproduce
@@ -90,6 +95,7 @@ class Animal(CellAgent):
         self.vision = vision
         self.heading = (0, 1) #default: north
         self.nn = nn
+        self.input_vector = []
 
 
     def closest_water(self):
@@ -205,24 +211,8 @@ class Animal(CellAgent):
         return math.hypot(x1 - x2, y1 - y2)
     
     def spawn_offspring(self):
-        #Create offspring by splitting energy and creating new instance.
-        '''self.energy /= 2
-        self.__class__(
-            self.model,
-            self.energy,
-            self.hydration,
-            self.p_reproduce,
-            self.max_energy,
-            self.max_hydration,
-            self.energy_from_food,
-            self.hydration_from_water,
-            self.cell,
-            self.vision_range,
-            self.vision_angle,
-            self.vision,
-            self.heading,
-            self.nn
-        )'''
+        """Create offspring by splitting energy and creating new instance"""
+
 
     def feed(self):
         """Abstract method to be implemented by subclasses."""
@@ -238,6 +228,7 @@ class Animal(CellAgent):
         neighbouring_visible_water = [cell for cell in vision if cell in neighbouring_water]
 
         if neighbouring_visible_water:
+            self.drank += 1
             self.hydration += self.hydration_from_water
 
     def move_in_direction(self, dirs):
@@ -250,9 +241,9 @@ class Animal(CellAgent):
     def step(self):
         """Execute one step of the animal's behavior."""
 
-        self.energy -= 1
+        self.energy -= 2
         if self.model.lakes == True:
-            self.hydration -= 1
+            self.hydration -= 2
         self.age += 1
 
         if self.energy < 0 or self.hydration < 0:
@@ -272,11 +263,10 @@ class Animal(CellAgent):
         action = torch.multinomial(act_probs, 1).item()
 
         if action == 0:
+
+            self.moves += 1
             self.move_in_direction(dir_logits)
 
-            self.energy -= 2
-            if self.model.lakes == True:
-                self.hydration -= 1
             
         elif action == 1:
             self.feed()
@@ -303,7 +293,6 @@ class LandPrey(Animal):
         self,
         model,
         age,
-        rep_count,
         energy,
         hydration,
         p_reproduce,
@@ -321,7 +310,6 @@ class LandPrey(Animal):
         super().__init__(
             model=model,
             energy=energy,
-            rep_count=rep_count,
             age=age,
             hydration=hydration,
             p_reproduce=p_reproduce,
@@ -335,8 +323,19 @@ class LandPrey(Animal):
             nn=nn
         )
 
+        self.pred_flees = 0
+        if os.path.isfile("prey_net.pth"):
+            self.nn.load_state_dict(torch.load("prey_net.pth"))
+        else:
+            nn = LandPreyNet()
+
 
     def update_input_vector(self):
+
+        if self.input_vector:
+            prev_pred_dist = self.input_vector[10]
+        else:
+            prev_pred_dist = 0
 
         p_dx, p_dy, min_pred_dist, n_pred = self.closest_pred()
         f_dx, f_dy, min_food_dist, n_food = self.closest_food()
@@ -347,6 +346,9 @@ class LandPrey(Animal):
         f_dx, f_dy = normalise(f_dx, f_dy)
 
         n_visible_cells = max(1, len(self.visible_cells()))
+
+        if prev_pred_dist > (min_pred_dist / self.vision_range):
+            self.pred_flees += 1
 
         self.input_vector = [
             self.energy / self.max_energy,
@@ -425,7 +427,6 @@ class LandPrey(Animal):
 
             self.__class__(
                 self.model,
-                0,
                 0,
                 current_eng * (1-energy_loss),
                 self.hydration,
@@ -514,7 +515,6 @@ class LandPredator(Animal):
         self,
         model,
         age,
-        rep_count,
         energy,
         hydration,
         p_reproduce,
@@ -527,13 +527,12 @@ class LandPredator(Animal):
         vision_angle=90,
         vision=[],
         heading=(0,1),
-        nn=None
+        nn=LandPredNet()
     ):
         super().__init__(
             model=model,
             energy=energy,
             age=age,
-            rep_count=rep_count,
             hydration=hydration,
             p_reproduce=p_reproduce,
             max_energy=max_energy,
@@ -543,11 +542,24 @@ class LandPredator(Animal):
             cell=cell,
             vision_range=vision_range,
             vision_angle=vision_angle,
-            nn = LandPredNet()
+            nn = nn
         )
+
+        self.prey_eaten = 0
+        self.prey_chases = 0
+        if os.path.isfile("pred_net.pth"):
+            self.nn.load_state_dict(torch.load("pred_net.pth"))
+        else:
+            self.nn = LandPredNet()
+            
 
 
     def update_input_vector(self):
+
+        if self.input_vector:
+            prev_prey_dist = self.input_vector[6]
+        else:
+            prev_prey_dist = self.vision_range
 
         w_dx, w_dy, min_water_dist, n_water = self.closest_water()
         p_dx, p_dy, min_prey_dist, n_prey = self.closest_prey()
@@ -555,6 +567,9 @@ class LandPredator(Animal):
 
         w_dx, w_dy = normalise(w_dx, w_dy)
         p_dx, p_dy = normalise(p_dx, p_dy)
+
+        if prev_prey_dist > (min_prey_dist / self.vision_range):
+            self.prey_chases += 1
 
         self.input_vector = [
             self.energy / self.max_energy,
@@ -614,7 +629,6 @@ class LandPredator(Animal):
             self.__class__(
                 self.model,
                 0,
-                0,
                 current_eng * (1-energy_loss),
                 self.random.random() * self.max_hydration,
                 self.p_reproduce,
@@ -633,10 +647,17 @@ class LandPredator(Animal):
 
     def feed(self):
         """If possible, eat prey at current location."""
-        prey = [obj for obj in self.cell.agents if isinstance(obj, LandPrey)]
+
+        nearby_cells = [self.cell] + list(self.cell.neighborhood)
+        
+        prey = []
+        for cell in nearby_cells:
+            prey.extend([a for a in cell.agents if isinstance(a, LandPrey)])
+
         if prey:  # If there are any prey present
             prey_to_eat = self.random.choice(prey)
             self.energy = min(self.energy + self.energy_from_food, self.max_energy)
+            self.prey_eaten += 1
             prey_to_eat.remove()
 
     

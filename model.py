@@ -21,13 +21,13 @@ class PreyPred(Model):
 
     def __init__(
         self,
-        x=20,
-        y=20,
+        x=50,
+        y=50,
         z=2,
-        initial_land_prey=30,
+        initial_land_prey=90,
         prey_max_eng=200,
         prey_max_hydration=200,
-        initial_land_pred=5,
+        initial_land_pred=15,
         land_prey_reproduce=1.0,
         pred_max_eng=200,
         pred_max_hydration=200,
@@ -36,7 +36,7 @@ class PreyPred(Model):
         land_pred_gain_from_water=50,
         grass = True,
         grass_regrowth_time=20,
-        lakes = False,
+        lakes = True,
         land_prey_gain_from_food=25,
         land_prey_gain_from_water=50,
         prey_vis_r=4,
@@ -45,6 +45,7 @@ class PreyPred(Model):
         pred_vis_a=90,
         seed=0,
         simulator: ABMSimulator = None,
+        data_collect = True
     ):
         """Create a new Prey-Pred model with the given parameters.
 
@@ -79,23 +80,26 @@ class PreyPred(Model):
             capacity=math.inf,
             random=self.random,
         )
+        self.data_collect = data_collect
+        self.seed = seed
 
         self.lakes = lakes
 
+        if data_collect:
         # Set up data collection
-        model_reporters = {
-            "Land Predators": lambda m: len(m.agents_by_type[LandPredator]),
-            "Land Prey": lambda m: len(m.agents_by_type[LandPrey]),
-        }
-        if grass:
-            model_reporters["Grass"] = lambda m: len(
-                m.agents_by_type[GrassPatch].select(lambda a: a.fully_grown)
-            )
+            model_reporters = {
+                "Land Predators": lambda m: len([a for a in m.agents_by_type[LandPredator] if isinstance(a, LandPredator)]),
+                "Land Prey": lambda m: len([a for a in m.agents_by_type[LandPrey] if isinstance(a, LandPrey)]),
+            }
+            if grass:
+                model_reporters["Grass"] = lambda m: len(
+                    m.agents_by_type[GrassPatch].select(lambda a: a.fully_grown)
+                )
 
-        self.datacollector = DataCollector(model_reporters)
+            self.datacollector = DataCollector(model_reporters)
 
-        #Create water
 
+        #Create land and water cells
         self.land_cells = self.generateCells()
 
 
@@ -114,7 +118,6 @@ class PreyPred(Model):
             cell = None,
             vision_range=prey_vis_r,
             vision_angle=prey_vis_a,
-            rep_count = 0
         )
         
         for p in prey:
@@ -125,7 +128,6 @@ class PreyPred(Model):
             self,
             initial_land_pred,
             age=0,
-            rep_count=0,
             energy=self.rng.uniform(20, pred_max_eng, initial_land_pred),
             hydration=self.rng.uniform(20, pred_max_hydration, initial_land_pred),
             p_reproduce=land_pred_reproduce,
@@ -154,18 +156,21 @@ class PreyPred(Model):
 
         # Collect initial data
         self.running = True
-        self.datacollector.collect(self)
+        if data_collect:
+            self.datacollector.collect(self)
 
     def step(self):
         """Execute one step of the model."""
         # First activate all land prey, then all predators, both in random order
         for vis in list(self.agents_by_type.get(VisionPatch, [])):
             vis.remove()
+
         self.agents_by_type[LandPrey].shuffle_do("step")
         self.agents_by_type[LandPredator].shuffle_do("step")
 
         # Collect data
-        self.datacollector.collect(self)
+        if self.data_collect:
+            self.datacollector.collect(self)
 
 
 

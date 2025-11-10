@@ -16,7 +16,7 @@ def prey_pred_portrayal(agent):
         return
 
     portrayal = AgentPortrayalStyle(
-        size=200,
+        size=40,
         marker="o",
         zorder=2,
     )
@@ -41,9 +41,9 @@ def prey_pred_portrayal(agent):
 
     elif isinstance(agent, VisionPatch):
         if agent.creature == LandPredator:
-            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.6), ("zorder", 1))
+            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.35), ("zorder", 1))
         else:
-            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.6), ("zorder", 1))
+            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.35), ("zorder", 1))
 
 
     return portrayal
