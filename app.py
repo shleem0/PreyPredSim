@@ -16,34 +16,38 @@ def prey_pred_portrayal(agent):
         return
 
     portrayal = AgentPortrayalStyle(
-        size=40,
+        size=50,
         marker="o",
         zorder=2,
     )
 
     if isinstance(agent, LandPredator):
-        portrayal.update(("color", "red"), ("zorder", 2))
+        portrayal.update(("color", "red"), ("zorder", 1))
 
     elif isinstance(agent, LandPrey):
-        portrayal.update(("color", "cyan"), ("zorder", 2))
+        portrayal.update(("color", "cyan"), ("zorder", 1))
 
     elif isinstance(agent, WaterPatch):
-        portrayal.update(("color", "tab:blue"))
-        portrayal.update(("marker", "s"), ("zorder", 0))
+        portrayal.update(("color", "tab:blue"), ("alpha", 0.5))
+        portrayal.update(("marker", "s"), ("zorder", 1))
 
     elif isinstance(agent, GrassPatch):
         if agent.fully_grown:
             portrayal.update(("color", "tab:green"))
-            portrayal.update(("marker", "^"), ("zorder", 1))
+            portrayal.update(("marker", "^"), ("zorder", 0))
         else:
             portrayal.update(("color", "tab:brown"))
             portrayal.update(("marker", "s"), ("zorder", -1))
 
     elif isinstance(agent, VisionPatch):
-        if agent.creature == LandPredator:
-            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.35), ("zorder", 1))
+
+        if not agent.model.show_vision:
+            portrayal.update(("color", "white"), ("marker", "s"), ("alpha", 0.0), ("zorder", 0))
+
+        elif agent.creature == LandPredator:
+            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.2), ("zorder", 2))
         else:
-            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.35), ("zorder", 1))
+            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.2), ("zorder", 2))
 
 
     return portrayal
@@ -52,22 +56,28 @@ def prey_pred_portrayal(agent):
 model_params = {
     "seed": {
         "type": "InputText",
-        "value": 0,
+        "value": 1,
         "label": "Random Seed",
     },
     "grass": {
         "type": "Select",
         "value": True,
         "values": [True, False],
-        "label": "grass regrowth enabled?",
+        "label": "Grass regrowth enabled?",
     },
-    "initial_land_prey": Slider("Initial Land Prey Population", 30, 10, 300),
-    "initial_land_pred": Slider("Initial Land Predator Population", 3, 5, 100),
-    "land_prey_reproduce": Slider("Land Prey Reproduction Rate", 1.0, 0.01, 1.0, 0.01),
-    "land_pred_reproduce": Slider("Land Predator Reproduction Rate", 1.0, 0.01, 1.0,0.01,),
-    "land_pred_gain_from_food": Slider("Land Predator Gain From Food Rate", 10, 1, 50),
-    "land_prey_gain_from_food": Slider("Land Prey Gain From Food", 4, 1, 10),
-    "grass_regrowth_time": Slider("Grass Regrowth Time", 20, 1, 50),
+    "show_vision": {
+        "type": "Select",
+        "value": True,
+        "values": [True, False],
+        "label": "Show vision cones?"
+    },
+    "initial_land_prey": Slider("Initial Land Prey Population", 90, 10, 300),
+    "initial_land_pred": Slider("Initial Land Pred. Population", 30, 5, 100),
+    "land_prey_reproduce": Slider("Land Prey Reproduction Rate", 0.6, 0.01, 1.0, 0.01),
+    "land_pred_reproduce": Slider("Land Pred. Reproduction Rate", 0.8, 0.01, 1.0,0.01,),
+    "land_pred_gain_from_food": Slider("Land Pred. Gain From Food", 140, 1, 200),
+    "land_prey_gain_from_food": Slider("Land Prey Gain From Food", 70, 1, 200),
+    "grass_regrowth_time": Slider("Grass Regrowth Time", 50, 1, 200),
 }
 
 
@@ -82,7 +92,7 @@ def post_process_lines(ax):
 
 
 lineplot_component = make_plot_component(
-    {"Land Predators": "tab:orange", "Land Prey": "tab:cyan"},
+    {"Land Predators": "tab:orange", "Land Prey": "tab:cyan"}, #"Total Kills": "tab:red"},
     post_process=post_process_lines,
 )
 

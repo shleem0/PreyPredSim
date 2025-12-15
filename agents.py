@@ -1,7 +1,7 @@
 from mesa.discrete_space import CellAgent, FixedAgent
 import math
 
-import constants
+from constants import DIRECTION_VECTORS, MATURITY, MAX_AGE
 
 import torch
 import torch.nn as nn
@@ -78,7 +78,8 @@ class Animal(CellAgent):
         """
 
         super().__init__(model)
-        self.age = age
+        self.age = 0
+        self.max_age = MAX_AGE
         self.rep_count = 0
         self.drank = 0
         self.moves = 0
@@ -115,7 +116,7 @@ class Animal(CellAgent):
         
 
     def get_genome(self):
-        return torch.nn.utils.parameters_to_vector(self.nn.parameters()).detach().cpu().numpy()
+        return torch.nn.utils.parameters_to_vector(self.nn.parameters()).detach().cpu().numpy().copy()
 
     def set_genome(self, genome):
         vec = torch.tensor(genome, dtype=torch.float32)
@@ -137,10 +138,10 @@ class Animal(CellAgent):
 
     def get_cell_in_direction(self, dir_idx):
         """Return the neighbouring cell in the absolute direction index (or None)."""
-        if dir_idx < 0 or dir_idx >= len(constants.DIRECTION_VECTORS):
+        if dir_idx < 0 or dir_idx >= len(DIRECTION_VECTORS):
             return None
 
-        dx, dy = constants.DIRECTION_VECTORS[dir_idx]
+        dx, dy = DIRECTION_VECTORS[dir_idx]
         cx, cy = self.cell.coordinate
         target_coord = (cx + dx, cy + dy)
 
@@ -155,7 +156,7 @@ class Animal(CellAgent):
         """Return a boolean mask (list) of length len(DIRECTION_VECTORS) where True means that
         the direction exists and is not water-blocked."""
         mask = []
-        for (dx, dy) in constants.DIRECTION_VECTORS:
+        for (dx, dy) in DIRECTION_VECTORS:
             cx, cy = self.cell.coordinate
             target_coord = (cx + dx, cy + dy)
             found = None
@@ -246,7 +247,7 @@ class Animal(CellAgent):
             self.hydration -= 2
         self.age += 1
 
-        if self.energy < 0 or self.hydration < 0:
+        if self.energy < 0 or self.hydration < 0 or self.age > self.max_age:
             self.remove()
             return
         
@@ -263,7 +264,6 @@ class Animal(CellAgent):
         action = torch.multinomial(act_probs, 1).item()
 
         if action == 0:
-
             self.moves += 1
             self.move_in_direction(dir_logits)
 
@@ -275,13 +275,24 @@ class Animal(CellAgent):
         elif action == 3:
             self.spawn_offspring()
         elif action == 4:
-            pass
-
-        for cell in self.vision:
             if isinstance(self, LandPrey):
-                VisionPatch(self.model, cell, LandPrey)
+                pass
             else:
-                VisionPatch(self.model, cell, LandPredator)
+                self.moves += 1
+
+                if self.input_vector != [] and self.input_vector[7] <= 0:
+                    random_logits = torch.ones(8)
+                    self.move_in_direction(random_logits)
+
+                else:
+                    self.move_in_direction(dir_logits)
+
+        if self.model.show_vision:
+            for cell in self.vision:
+                if isinstance(self, LandPrey):
+                    VisionPatch(self.model, cell, LandPrey)
+                else:
+                    VisionPatch(self.model, cell, LandPredator)
 
 
 
@@ -324,6 +335,9 @@ class LandPrey(Animal):
         )
 
         self.pred_flees = 0
+        self.food_approach = 0
+        self.food_eaten = 0
+        self.water_approach = 0
         if os.path.isfile("prey_net.pth"):
             self.nn.load_state_dict(torch.load("prey_net.pth"))
         else:
@@ -334,8 +348,12 @@ class LandPrey(Animal):
 
         if self.input_vector:
             prev_pred_dist = self.input_vector[10]
+            prev_food_dist = self.input_vector[6]
+            prev_water_dist = self.input_vector[2]
         else:
             prev_pred_dist = 0
+            prev_food_dist = 0
+            prev_water_dist = 0
 
         p_dx, p_dy, min_pred_dist, n_pred = self.closest_pred()
         f_dx, f_dy, min_food_dist, n_food = self.closest_food()
@@ -349,6 +367,12 @@ class LandPrey(Animal):
 
         if prev_pred_dist > (min_pred_dist / self.vision_range):
             self.pred_flees += 1
+
+        if prev_food_dist < (min_food_dist / self.vision_range):
+            self.food_approach += 1
+
+        if prev_water_dist < (min_water_dist / self.vision_range):
+            self.water_approach += 1
 
         self.input_vector = [
             self.energy / self.max_energy,
@@ -407,14 +431,18 @@ class LandPrey(Animal):
     def spawn_offspring(self):
         #Create offspring by splitting energy and creating new instance.
 
-        self.rep_count += 1
+        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.5 and self.age >= MATURITY:
 
-        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.4:
-            current_eng = self.energy
-            energy_loss = self.random.random()
-            self.energy *= energy_loss
+            self.rep_count += 1
+
+            split_ratio = 0.3 
+            child_energy = max(self.energy * split_ratio, self.max_energy * 0.1)
+            self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.1)
 
             child_nn = LandPreyNet()
+            if os.path.isfile("prey_net.pth"):
+                child_nn.load_state_dict(torch.load("prey_net.pth"))
+
             genome = self.get_genome()
 
             mut_rate = 0.0
@@ -428,8 +456,8 @@ class LandPrey(Animal):
             self.__class__(
                 self.model,
                 0,
-                current_eng * (1-energy_loss),
-                self.hydration,
+                child_energy,
+                self.model.rng.uniform(self.max_hydration / 2, self.max_hydration),
                 self.p_reproduce,
                 self.max_energy,
                 self.max_hydration,
@@ -453,6 +481,7 @@ class LandPrey(Animal):
             return
         if grass_patch.fully_grown:
             self.energy = min(self.energy + self.energy_from_food, self.max_energy)
+            self.food_eaten += 1
             grass_patch.fully_grown = False
 
 
@@ -606,16 +635,18 @@ class LandPredator(Animal):
 
     def spawn_offspring(self):
 
-        self.rep_count += 1
+        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.7 and self.age > MATURITY:
 
-        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.7:
+            self.rep_count += 1
 
-            energy_loss = self.random.random()
-            current_eng = self.energy
-
-            self.energy *= energy_loss
+            split_ratio = 0.3 
+            child_energy = max(self.energy * split_ratio, self.max_energy * 0.3)
+            self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.3)
 
             child_nn = LandPredNet()
+            if os.path.isfile("pred_net.pth"):
+                child_nn.load_state_dict(torch.load("pred_net.pth"))
+
             genome = self.get_genome()
 
             mut_rate = 0.02
@@ -629,8 +660,8 @@ class LandPredator(Animal):
             self.__class__(
                 self.model,
                 0,
-                current_eng * (1-energy_loss),
-                self.random.random() * self.max_hydration,
+                child_energy,
+                self.model.rng.uniform(self.max_hydration / 2, self.max_hydration),
                 self.p_reproduce,
                 self.max_energy,
                 self.max_hydration,
@@ -658,6 +689,7 @@ class LandPredator(Animal):
             prey_to_eat = self.random.choice(prey)
             self.energy = min(self.energy + self.energy_from_food, self.max_energy)
             self.prey_eaten += 1
+            self.model.total_kills += 1
             prey_to_eat.remove()
 
     

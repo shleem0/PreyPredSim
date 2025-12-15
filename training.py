@@ -1,6 +1,7 @@
 import numpy as np
 import torch
-import copy
+import matplotlib.pyplot as plt
+import os
 import random
 from agents import LandPrey, LandPredator, LandPreyNet, LandPredNet
 from model import PreyPred
@@ -30,7 +31,7 @@ class Individual:
 
 
 class GeneticAlgorithm:
-    def __init__(self, nn_class, pop_size=20, opp_size=5, mut_rate=0.05, mut_strength=0.2):
+    def __init__(self, nn_class, pop_size=20, opp_size=5, mut_rate=0.075, mut_strength=0.4):
         self.nn_class = nn_class
         self.pop_size = pop_size
         self.opp_size = opp_size
@@ -42,11 +43,11 @@ class GeneticAlgorithm:
 
 
 
-    def evaluate_fitness(self, model_class, training_class, opponent_class, training_args, opponent_args, steps=100):
+    def evaluate_fitness(self, model_class, training_class, opponent_class, training_args, opponent_args, steps=300):
         """Evaluate each genome by running a Mesa simulation."""
         fitnesses = []
 
-        model = model_class(simulator=ABMSimulator(), initial_land_prey=0, initial_land_pred=0, data_collect = False, seed=random.randint(0, 9999))  # Reset model
+        model = model_class(simulator=ABMSimulator(), initial_land_prey=0, initial_land_pred=0, data_collect = False, seed=random.randint(1, 9999))  # Reset model
 
         for ind in self.population:
             training_agent = training_class(nn=ind.nn, model = model, cell=random.choice(model.land_cells), **training_args)
@@ -62,20 +63,31 @@ class GeneticAlgorithm:
         for ind in self.population:
 
             if ind.agent.energy <= 1:
-                death_penalty = -10
+                death_penalty = -5
             else:
                 death_penalty = 0
 
-            #Prey fitness - reproductions + amount drank + moves + fleeing efficiency - death penalty
+            #Prey fitness - survival + eating/drinking + reproduction + foraging + fleeing - death
             if training_class == LandPrey:
-                flee_eff = ind.agent.pred_flees / max(1, ind.agent.moves)
-                ind.fitness = 5 * ind.agent.rep_count + 0.5 * ind.agent.drank + 0.1 * ind.agent.moves + 0.5 * flee_eff + death_penalty
+                foraging = ind.agent.food_approach + ind.agent.water_approach
 
-            #Predator fitness - reproductions + amount drank + prey eaten + moves + hunt efficiency - death penalty
+                ind.fitness = (2 * ind.agent.age +
+                               3 * ind.agent.food_eaten +
+                               ind.agent.drank +
+                               3 * ind.agent.rep_count +
+                               2 * foraging +
+                               ind.agent.pred_flees +
+                               death_penalty)
+                
+            #Predator fitness - survival + eating/drinking + reproduction + moving + chasing  - death
             elif training_class == LandPredator:
-                hunt_eff = ind.agent.prey_chases / max(1, ind.agent.moves)
-                ind.fitness = 5 * ind.agent.rep_count + 0.5 * ind.agent.drank + 3 * ind.agent.prey_eaten + 0.1 * ind.agent.moves + 0.5 * hunt_eff + death_penalty
-
+                ind.fitness = (4 * ind.agent.age +
+                               6 * ind.agent.prey_eaten +
+                               3 * ind.agent.drank +
+                               3 * ind.agent.rep_count +
+                               3 * ind.agent.prey_chases +
+                               death_penalty)
+            
             fitnesses.append(ind.fitness)
 
         return np.array(fitnesses)
@@ -128,41 +140,49 @@ class GeneticAlgorithm:
 
 
 
-ga_prey = GeneticAlgorithm(nn_class=LandPreyNet, pop_size=90, opp_size=15)
-ga_pred = GeneticAlgorithm(nn_class=LandPredNet, pop_size=15, opp_size=90)
+ga_prey = GeneticAlgorithm(nn_class=LandPreyNet, pop_size=100, opp_size=20)
+ga_pred = GeneticAlgorithm(nn_class=LandPredNet, pop_size=20, opp_size=100)
 
-cycles = 50
-generations = 5
+cycles = 10
+gpc = 10
 
 prey_args = {
     "age": 0,
-    "energy": 100,
-    "hydration": 100,
-    "p_reproduce": 0.3,
-    "max_energy": 120,
-    "max_hydration": 120,
-    "energy_from_food": 5,
-    "hydration_from_water": 20,
-    "vision_range": 4,
+    "energy": 30,
+    "hydration": 30,
+    "p_reproduce": 0.15,
+    "max_energy": 200,
+    "max_hydration": 200,
+    "energy_from_food": 70,
+    "hydration_from_water": 100,
+    "vision_range": 6,
     "vision_angle": 180,
 }
 
 pred_args = {
     "age": 0,
-    "energy": 100,
-    "hydration": 100,
-    "p_reproduce": 0.4,
-    "max_energy": 100,
-    "max_hydration": 100,
-    "energy_from_food": 15,
-    "hydration_from_water": 20,
-    "vision_range": 8,
+    "energy": 30,
+    "hydration": 30,
+    "p_reproduce": 0.2,
+    "max_energy": 200,
+    "max_hydration": 200,
+    "energy_from_food": 140,
+    "hydration_from_water": 100,
+    "vision_range": 12,
     "vision_angle": 90,
 }
+
+if os.path.exists("prey_net.pth"):
+    os.remove("prey_net.pth")
+
+if os.path.exists("pred_net.pth"):
+    os.remove("pred_net.pth")
+
+
 for cyc in range(cycles):
 
     print(f"---- Prey Training: Cycle {cyc}----")
-    for gen in range(generations):
+    for gen in range(gpc):
         fitnesses = ga_prey.evaluate_fitness(PreyPred, LandPrey, LandPredator, prey_args, pred_args)
         print(f"Generation {gen} - Best fitness: {fitnesses.max()}")
 
@@ -177,8 +197,8 @@ for cyc in range(cycles):
 
 
     print (f"---- Predator Training: Cycle {cyc} ----")
-    for gen in range(generations):
-        fitnesses = ga_pred.evaluate_fitness(PreyPred, LandPredator, LandPrey, pred_args, prey_args)
+    for gen in range(gpc):
+        fitnesses  = ga_pred.evaluate_fitness(PreyPred, LandPredator, LandPrey, pred_args, prey_args)
         print(f"Generation {gen} - Best fitness: {fitnesses.max()}")
 
         best_idx = np.argmax(fitnesses)

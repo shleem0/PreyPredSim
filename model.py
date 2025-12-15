@@ -1,5 +1,7 @@
 import math
 
+from constants import MATURITY
+
 from mesa import Model
 from mesa.datacollection import DataCollector
 from mesa.discrete_space import OrthogonalMooreGrid
@@ -21,31 +23,33 @@ class PreyPred(Model):
 
     def __init__(
         self,
-        x=50,
-        y=50,
+        x=45,
+        y=45,
         z=2,
         initial_land_prey=90,
         prey_max_eng=200,
         prey_max_hydration=200,
-        initial_land_pred=15,
-        land_prey_reproduce=1.0,
+        initial_land_pred=30,
+        land_prey_reproduce=0.6,
         pred_max_eng=200,
         pred_max_hydration=200,
-        land_pred_reproduce=1.0,
-        land_pred_gain_from_food=50,
-        land_pred_gain_from_water=50,
+        land_pred_reproduce=0.8,
+        land_pred_gain_from_food=140,
+        land_pred_gain_from_water=100,
+        total_kills = 0,
         grass = True,
-        grass_regrowth_time=20,
+        grass_regrowth_time=30,
         lakes = True,
-        land_prey_gain_from_food=25,
-        land_prey_gain_from_water=50,
-        prey_vis_r=4,
+        land_prey_gain_from_food=70,
+        land_prey_gain_from_water=100,
+        prey_vis_r=8,
         prey_vis_a=180,
-        pred_vis_r=8,
+        pred_vis_r=16,
         pred_vis_a=90,
-        seed=0,
+        seed=1,
         simulator: ABMSimulator = None,
-        data_collect = True
+        data_collect = True,
+        show_vision = True
     ):
         """Create a new Prey-Pred model with the given parameters.
 
@@ -82,14 +86,17 @@ class PreyPred(Model):
         )
         self.data_collect = data_collect
         self.seed = seed
+        self.show_vision = show_vision
 
         self.lakes = lakes
+        self.total_kills = total_kills
 
         if data_collect:
         # Set up data collection
             model_reporters = {
                 "Land Predators": lambda m: len([a for a in m.agents_by_type[LandPredator] if isinstance(a, LandPredator)]),
                 "Land Prey": lambda m: len([a for a in m.agents_by_type[LandPrey] if isinstance(a, LandPrey)]),
+                "Total Kills": lambda m: m.total_kills,
             }
             if grass:
                 model_reporters["Grass"] = lambda m: len(
@@ -107,9 +114,9 @@ class PreyPred(Model):
         prey = LandPrey.create_agents(
             self,
             initial_land_prey,
-            age=0,
-            energy=self.rng.uniform(20, prey_max_eng, initial_land_prey),
-            hydration=self.rng.uniform(20, prey_max_hydration, initial_land_prey),
+            age=self.rng.uniform(5, MATURITY + 20),
+            energy=self.rng.uniform(prey_max_eng / 2, prey_max_eng, initial_land_prey),
+            hydration=self.rng.uniform(prey_max_hydration / 2, prey_max_hydration, initial_land_prey),
             p_reproduce=land_prey_reproduce,
             max_energy=prey_max_eng,
             max_hydration=prey_max_hydration,
@@ -127,9 +134,9 @@ class PreyPred(Model):
         pred = LandPredator.create_agents(
             self,
             initial_land_pred,
-            age=0,
-            energy=self.rng.uniform(20, pred_max_eng, initial_land_pred),
-            hydration=self.rng.uniform(20, pred_max_hydration, initial_land_pred),
+            age=self.rng.uniform(5, MATURITY + 20),
+            energy=self.rng.uniform(pred_max_eng / 2, pred_max_eng, initial_land_pred),
+            hydration=self.rng.uniform(pred_max_hydration / 2, pred_max_hydration, initial_land_pred),
             p_reproduce=land_pred_reproduce,
             max_energy=pred_max_eng,
             max_hydration=pred_max_hydration,
@@ -158,6 +165,7 @@ class PreyPred(Model):
         self.running = True
         if data_collect:
             self.datacollector.collect(self)
+
 
     def step(self):
         """Execute one step of the model."""
