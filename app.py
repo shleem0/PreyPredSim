@@ -1,4 +1,4 @@
-from agents import GrassPatch, LandPrey, LandPredator, WaterPatch, VisionPatch
+from agents import GrassPatch, LandPrey, LandPredator, WaterPrey, WaterPredator, Prey, Predator, WaterPatch, VisionPatch
 from model import PreyPred
 from mesa.experimental.devs import ABMSimulator
 from mesa.visualization import (
@@ -16,7 +16,7 @@ def prey_pred_portrayal(agent):
         return
 
     portrayal = AgentPortrayalStyle(
-        size=50,
+        size=40,
         marker="o",
         zorder=2,
     )
@@ -26,6 +26,12 @@ def prey_pred_portrayal(agent):
 
     elif isinstance(agent, LandPrey):
         portrayal.update(("color", "cyan"), ("zorder", 1))
+
+    elif isinstance(agent, WaterPredator):
+        portrayal.update(("color", "orange"), ("zorder", 2))
+
+    elif isinstance(agent, WaterPrey):
+        portrayal.update(("color", "purple"), ("zorder", 2))
 
     elif isinstance(agent, WaterPatch):
         portrayal.update(("color", "tab:blue"), ("alpha", 0.5))
@@ -44,10 +50,10 @@ def prey_pred_portrayal(agent):
         if not agent.model.show_vision:
             portrayal.update(("color", "white"), ("marker", "s"), ("alpha", 0.0), ("zorder", 0))
 
-        elif agent.creature == LandPredator:
-            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.2), ("zorder", 2))
+        elif agent.creature == Predator:
+            portrayal.update(("color", "orange"), ("marker", "s"), ("alpha", 0.5), ("zorder", 2))
         else:
-            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.2), ("zorder", 2))
+            portrayal.update(("color", "violet"), ("marker", "s"), ("alpha", 0.5), ("zorder", 2))
 
 
     return portrayal
@@ -56,7 +62,7 @@ def prey_pred_portrayal(agent):
 model_params = {
     "seed": {
         "type": "InputText",
-        "value": 1,
+        "value": 62706322,
         "label": "Random Seed",
     },
     "grass": {
@@ -67,17 +73,26 @@ model_params = {
     },
     "show_vision": {
         "type": "Select",
-        "value": True,
+        "value": False,
         "values": [True, False],
         "label": "Show vision cones?"
     },
-    "initial_land_prey": Slider("Initial Land Prey Population", 90, 10, 300),
-    "initial_land_pred": Slider("Initial Land Pred. Population", 30, 5, 100),
+    "initial_land_prey": Slider("Initial Land Prey Population", 90, 0, 300),
+    "initial_land_pred": Slider("Initial Land Pred. Population", 15, 0, 100),
+    "initial_water_prey": Slider("Initial Water Prey Population", 120, 0, 300),
+    "initial_water_pred": Slider("Initial Water Pred. Population", 12, 0, 100),
+
     "land_prey_reproduce": Slider("Land Prey Reproduction Rate", 0.6, 0.01, 1.0, 0.01),
-    "land_pred_reproduce": Slider("Land Pred. Reproduction Rate", 0.8, 0.01, 1.0,0.01,),
-    "land_pred_gain_from_food": Slider("Land Pred. Gain From Food", 140, 1, 200),
-    "land_prey_gain_from_food": Slider("Land Prey Gain From Food", 70, 1, 200),
-    "grass_regrowth_time": Slider("Grass Regrowth Time", 50, 1, 200),
+    "land_pred_reproduce": Slider("Land Pred. Reproduction Rate", 0.6, 0.01, 1.0,0.01,),
+    "water_prey_reproduce": Slider("Water Prey Reproduction Rate", 0.4, 0.01, 1.0, 0.01),
+    "water_pred_reproduce": Slider("Water Pred. Reproduction Rate", 0.45, 0.01, 1.0,0.01,),
+
+    "land_prey_gain_from_food": Slider("Land Prey Gain From Food", 70, 0, 200),
+    "land_pred_gain_from_food": Slider("Land Pred. Gain From Food", 160, 0, 200),
+    "water_prey_gain_from_food": Slider("Water Prey Gain From Food", 100, 0, 200),
+    "water_pred_gain_from_food": Slider("Water Pred. Gain From Food", 90, 0, 200),
+
+    "grass_regrowth_time": Slider("Grass Regrowth Time", 40, 0, 200),
 }
 
 
@@ -90,20 +105,20 @@ def post_process_space(ax):
 def post_process_lines(ax):
     ax.legend(loc="center left", bbox_to_anchor=(1, 0.9))
 
-
-lineplot_component = make_plot_component(
-    {"Land Predators": "tab:orange", "Land Prey": "tab:cyan"}, #"Total Kills": "tab:red"},
-    post_process=post_process_lines,
-)
-
 simulator = ABMSimulator()
 model = PreyPred(simulator=simulator, grass=True)
+
+lineplot_component = make_plot_component(
+    {"Land Predators": "tab:red", "Land Prey": "tab:cyan", "Water Predators": "tab:orange", "Water Prey": "tab:purple"}, #"Total Kills": "tab:red"},
+    post_process=post_process_lines,
+)
 
 renderer = SpaceRenderer(
     model,
     backend="matplotlib",
 )
-renderer.draw_agents(prey_pred_portrayal)
+renderer.setup_agents(prey_pred_portrayal)
+renderer.draw_agents()
 renderer.post_process = post_process_space
 
 page = SolaraViz(

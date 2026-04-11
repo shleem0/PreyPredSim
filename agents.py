@@ -37,13 +37,32 @@ class LandPreyNet(nn.Module):
 
         logits = self.out(x)
         return logits
-    
+
+
+class WaterPreyNet(nn.Module):
+    def __init__(
+            self, input_size=10, hidden_size=20, n_actions = 4, n_dirs = 8
+    ):
+        #Initialise Water Prey neural net
+        super().__init__()
+        self.l1 = nn.Linear(input_size, hidden_size)
+        self.l2 = nn.Linear(hidden_size, hidden_size)
+        self.out = nn.Linear(hidden_size, n_actions + n_dirs)
+
+    def forward(self, x):
+
+        x = func.tanh(self.l1(x))
+        x = func.tanh(self.l2(x))
+
+        logits = self.out(x)
+        return logits  
+
 
 class LandPredNet(nn.Module):
     def __init__(
             self, input_size=10, hidden_size=20, n_actions = 5, n_dirs = 8
     ):
-        #Initialise Land Prey neural net
+        #Initialise Land Pred neural net
         super().__init__()
         self.l1 = nn.Linear(input_size, hidden_size)
         self.l2 = nn.Linear(hidden_size, hidden_size)
@@ -57,8 +76,25 @@ class LandPredNet(nn.Module):
         logits = self.out(x)
         return logits
     
+class WaterPredNet(nn.Module):
+    def __init__(
+            self, input_size=5, hidden_size=10, n_actions = 4, n_dirs = 8
+    ):
 
+        #Initialise Water Pred neural net
+        super().__init__()
+        self.l1 = nn.Linear(input_size, hidden_size)
+        self.l2 = nn.Linear(hidden_size, hidden_size)
+        self.out = nn.Linear(hidden_size, n_actions + n_dirs)
 
+    def forward(self, x):
+
+        x = func.relu(self.l1(x))
+        x = func.relu(self.l2(x))
+
+        logits = self.out(x)
+        return logits
+    
 #---Animal agents---
 class Animal(CellAgent):
     """The base animal class."""
@@ -82,7 +118,6 @@ class Animal(CellAgent):
         self.max_age = MAX_AGE
         self.rep_count = 0
         self.drank = 0
-        self.moves = 0
         self.energy = energy
         self.hydration = hydration
         self.p_reproduce = p_reproduce
@@ -95,6 +130,7 @@ class Animal(CellAgent):
         self.vision_angle = vision_angle
         self.vision = vision
         self.heading = (0, 1) #default: north
+        self.prev_opponent_vec = (0, 0),
         self.nn = nn
         self.input_vector = []
 
@@ -145,8 +181,6 @@ class Animal(CellAgent):
         cx, cy = self.cell.coordinate
         target_coord = (cx + dx, cy + dy)
 
-        # neighborhood contains the neighbouring cells (including current cell usually).
-        # We'll search the neighborhood for the exact coordinate.
         for c in self.cell.neighborhood:
             if c.coordinate == target_coord:
                 return c
@@ -166,7 +200,9 @@ class Animal(CellAgent):
                     break
             if found is None:
                 mask.append(False)
-            elif any(isinstance(o, WaterPatch) for o in found.agents):
+            elif (isinstance(self, LandPrey) or isinstance(self, LandPredator)) and any(isinstance(o, WaterPatch) for o in found.agents):
+                mask.append(False)
+            elif (isinstance(self, WaterPrey) or isinstance(self, WaterPredator)) and not (any(isinstance(o, WaterPatch) for o in found.agents)):
                 mask.append(False)
             else:
                 mask.append(True)
@@ -243,61 +279,160 @@ class Animal(CellAgent):
         """Execute one step of the animal's behavior."""
 
         self.energy -= 2
-        if self.model.lakes == True:
+        if self.model.lakes == True and (isinstance(self, LandPredator) or isinstance(self, LandPrey)):
             self.hydration -= 2
         self.age += 1
 
         if self.energy < 0 or self.hydration < 0 or self.age > self.max_age:
             self.remove()
+            #print(f"{self.__class__} died: energy={self.energy}, hydration={self.hydration}, age= {self.age}")
             return
         
         self.vision = self.visible_cells()
-        
         self.update_input_vector()
 
         x = torch.tensor(self.input_vector, dtype=torch.float32).unsqueeze(0)
         logits = self.nn(x)[0]
-        act_logits = logits[:5]
-        dir_logits = logits[5:]
+
+        if isinstance(self, LandPredator) or isinstance(self, LandPrey):
+            act_logits = logits[:5]
+            dir_logits = logits[5:]
+        else:
+            act_logits = logits[:4]
+            dir_logits = logits[4:]
+
+
+        if isinstance(self, Predator):
+            prey_in_cell = []
+            prey_in_cell.extend([a for a in self.cell.agents if isinstance(a, Prey)])
+
+            if prey_in_cell:  # If there are any prey present
+                prey_to_eat = self.random.choice(prey_in_cell)
+
+                self.energy = min(self.energy + self.energy_from_food, self.max_energy)
+                self.prey_eaten += (1 - self.energy / self.max_energy) 
+                self.model.total_kills += 1
+
+                #print(f"{prey_to_eat.__class__} eaten by {self.__class__}")
+                prey_to_eat.remove()
+
+                return
+
+
 
         act_probs = func.softmax(act_logits, dim=0)
         action = torch.multinomial(act_probs, 1).item()
 
         if action == 0:
-            self.moves += 1
             self.move_in_direction(dir_logits)
 
-            
+            heading_norm = normalise(self.heading[0], self.heading[1])
+            alignment = heading_norm[0] * self.prev_opponent_vec[0] + heading_norm[1] * self.prev_opponent_vec[1]
+
+            if isinstance(self, Predator):
+                self.chase += max(0, alignment)
+                self.chase -= 0.3 * max(0, -alignment)
+            else:
+                self.flee += max(0, -alignment)
+                self.flee -= 0.3 * max(0, alignment)
+
+
         elif action == 1:
             self.feed()
-        elif action == 2:
-            self.drink()
+
         elif action == 3:
             self.spawn_offspring()
+
         elif action == 4:
-            if isinstance(self, LandPrey):
-                pass
-            else:
-                self.moves += 1
+            pass
 
-                if self.input_vector != [] and self.input_vector[7] <= 0:
-                    random_logits = torch.ones(8)
-                    self.move_in_direction(random_logits)
-
-                else:
-                    self.move_in_direction(dir_logits)
+        elif action == 5:
+            self.drink()
 
         if self.model.show_vision:
             for cell in self.vision:
-                if isinstance(self, LandPrey):
-                    VisionPatch(self.model, cell, LandPrey)
+                if isinstance(self, Prey):
+                    VisionPatch(self.model, cell, Prey)
                 else:
-                    VisionPatch(self.model, cell, LandPredator)
+                    VisionPatch(self.model, cell, Predator)
 
 
 
 #---Prey---
-class LandPrey(Animal):
+
+class Prey(Animal):
+
+    def __init__(
+    self,
+    model,
+    age,
+    energy,
+    hydration,
+    p_reproduce,
+    max_energy,
+    max_hydration,
+    energy_from_food,
+    hydration_from_water,
+    cell,
+    vision_range=3,
+    vision_angle=180,
+    vision=[],
+    heading=(0,1),
+    prev_opponent_vec = (0, 0),
+    nn=LandPreyNet()
+    ):
+        super().__init__(
+            model=model,
+            energy=energy,
+            age=age,
+            hydration=hydration,
+            p_reproduce=p_reproduce,
+            max_energy=max_energy,
+            max_hydration=max_hydration,
+            energy_from_food=energy_from_food,
+            hydration_from_water=hydration_from_water,
+            cell=cell,
+            vision_range=vision_range,
+            vision_angle=vision_angle,
+            nn=nn
+            )
+
+
+
+    #---Input vector helpers---
+    def closest_food(self):
+        visible = self.vision + [self.cell]
+
+        cells_with_grass = [cell for cell in visible
+            if any(isinstance(obj, GrassPatch) and obj.fully_grown for obj in cell.agents)]
+
+        if cells_with_grass:
+            closest_cell = min(cells_with_grass, key=lambda c: self.cell_distance(self.cell, c))
+            min_dist = self.cell_distance(self.cell, closest_cell)
+            count = len(cells_with_grass)
+
+            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
+
+        else:
+            return (0, 0, self.vision_range, 0)
+        
+    def closest_pred(self):
+        visible = self.vision
+
+        cells_with_pred = [cell for cell in visible
+            if any(isinstance(obj, Predator) for obj in cell.agents)]
+
+        if cells_with_pred:
+            closest_cell = min(cells_with_pred, key=lambda c: self.cell_distance(self.cell, c))
+            min_dist = self.cell_distance(self.cell, closest_cell)
+            count = len(cells_with_pred)
+
+            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
+        else:
+            return (0, 0, self.vision_range, 0)
+
+
+class LandPrey(Prey):
     """A land prey animal that walks around, reproduces (asexually) and gets eaten."""
 
     def __init__(
@@ -316,6 +451,7 @@ class LandPrey(Animal):
         vision_angle=180,
         vision=[],
         heading=(0,1),
+        prev_opponent_vec=(0,0),
         nn=LandPreyNet()
     ):
         super().__init__(
@@ -334,7 +470,7 @@ class LandPrey(Animal):
             nn=nn
         )
 
-        self.pred_flees = 0
+        self.flee = 0
         self.food_approach = 0
         self.food_eaten = 0
         self.water_approach = 0
@@ -361,12 +497,10 @@ class LandPrey(Animal):
 
         w_dx, w_dy = normalise(w_dx, w_dy)
         p_dx, p_dy = normalise(p_dx, p_dy)
+        self.prev_opponent_vec = (p_dx, p_dy)
         f_dx, f_dy = normalise(f_dx, f_dy)
 
         n_visible_cells = max(1, len(self.visible_cells()))
-
-        if prev_pred_dist > (min_pred_dist / self.vision_range):
-            self.pred_flees += 1
 
         if prev_food_dist < (min_food_dist / self.vision_range):
             self.food_approach += 1
@@ -394,40 +528,6 @@ class LandPrey(Animal):
             p_dy
         ]
 
-
-    #---Input vector helpers---
-    def closest_food(self):
-        visible = self.vision + [self.cell]
-
-        cells_with_grass = [cell for cell in visible
-            if any(isinstance(obj, GrassPatch) and obj.fully_grown for obj in cell.agents)]
-
-        if cells_with_grass:
-            closest_cell = min(cells_with_grass, key=lambda c: self.cell_distance(self.cell, c))
-            min_dist = self.cell_distance(self.cell, closest_cell)
-            count = len(cells_with_grass)
-
-            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
-
-        else:
-            return (0, 0, self.vision_range, 0)
-        
-    def closest_pred(self):
-        visible = self.vision
-
-        cells_with_pred = [cell for cell in visible
-            if any(isinstance(obj, LandPredator) for obj in cell.agents)]
-
-        if cells_with_pred:
-            closest_cell = min(cells_with_pred, key=lambda c: self.cell_distance(self.cell, c))
-            min_dist = self.cell_distance(self.cell, closest_cell)
-            count = len(cells_with_pred)
-
-            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
-        else:
-            return (0, 0, self.vision_range, 0)
-
-
     def spawn_offspring(self):
         #Create offspring by splitting energy and creating new instance.
 
@@ -440,8 +540,8 @@ class LandPrey(Animal):
             self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.1)
 
             child_nn = LandPreyNet()
-            if os.path.isfile("prey_net.pth"):
-                child_nn.load_state_dict(torch.load("prey_net.pth"))
+            if os.path.isfile("land_prey_net.pth"):
+                child_nn.load_state_dict(torch.load("land_prey_net.pth"))
 
             genome = self.get_genome()
 
@@ -468,6 +568,7 @@ class LandPrey(Animal):
                 self.vision_angle,
                 self.vision,
                 self.heading,
+                self.prev_opponent_vec,
                 child_nn
             )
 
@@ -533,11 +634,255 @@ class LandPrey(Animal):
             return
         
         self.move_to(target_cell)
+
+
+
+class WaterPrey(Prey):
+
+    def __init__(
+        self,
+        model,
+        age,
+        energy,
+        p_reproduce,
+        max_energy,
+        max_hydration,
+        energy_from_food,
+        hydration_from_water,
+        cell,
+        vision_range=3,
+        vision_angle=180,
+        vision=[],
+        heading=(0,1),
+        prev_opponent_vec=(0,0),
+        nn=WaterPreyNet()
+    ):
+        super().__init__(
+            model=model,
+            energy=energy,
+            age=age,
+            hydration=max_hydration,
+            p_reproduce=p_reproduce,
+            max_energy=max_energy,
+            max_hydration=max_hydration,
+            energy_from_food=energy_from_food,
+            hydration_from_water=hydration_from_water,
+            cell=cell,
+            vision_range=vision_range,
+            vision_angle=vision_angle,
+            nn=nn
+        )
+
+        self.flee = 0
+        self.food_approach = 0
+        self.food_eaten = 0
+        if os.path.isfile("water_prey_net.pth"):
+            self.nn.load_state_dict(torch.load("water_prey_net.pth"))
+        else:
+            nn = WaterPreyNet()
+
+
+    def update_input_vector(self):
+
+        if self.input_vector:
+            prev_pred_dist = self.input_vector[6]
+            prev_food_dist = self.input_vector[2]
+        else:
+            prev_pred_dist = 0
+            prev_food_dist = 0
+
+        p_dx, p_dy, min_pred_dist, n_pred = self.closest_pred()
+        f_dx, f_dy, min_food_dist, n_food = self.closest_food()
+
+        p_dx, p_dy = normalise(p_dx, p_dy)
+        self.prev_opponent_vec = (p_dx, p_dy)
+        f_dx, f_dy = normalise(f_dx, f_dy)
+
+        n_visible_cells = max(1, len(self.visible_cells()))
+
+        if prev_food_dist < (min_food_dist / self.vision_range):
+            self.food_approach += 1
+
+        self.input_vector = [
+            self.energy / self.max_energy,
+            self.hydration / self.max_hydration,
+
+            min_food_dist / self.vision_range,
+            n_food / n_visible_cells,
+            f_dx,
+            f_dy,
+
+            min_pred_dist / self.vision_range,
+            n_pred / n_visible_cells,
+            p_dx,
+            p_dy
+        ]
+
+
+    def feed(self):
+        #If possible, eat grass at current location
+        grass_patch = next(
+            obj for obj in self.cell.agents if isinstance(obj, GrassPatch)
+        )
+        if not grass_patch:
+            return
+        if grass_patch.fully_grown:
+            self.energy = min(self.energy + self.energy_from_food, self.max_energy)
+            self.food_eaten += 1
+            grass_patch.fully_grown = False
+
+
+    def spawn_offspring(self):
+        #Create offspring by splitting energy and creating new instance.
+
+        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.5 and self.age >= MATURITY:
+
+            self.rep_count += 1
+
+            split_ratio = 0.3 
+            child_energy = max(self.energy * split_ratio, self.max_energy * 0.1)
+            self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.1)
+
+            child_nn = WaterPreyNet()
+            if os.path.isfile("water_prey_net.pth"):
+                child_nn.load_state_dict(torch.load("water_prey_net.pth"))
+
+            genome = self.get_genome()
+
+            mut_rate = 0.0
+            mut_str = 0.0
+            mask = np.random.rand(genome.size) < mut_rate
+            genome[mask] += np.random.normal(0, mut_str, size=mask.sum())
+
+            vec = torch.tensor(genome, dtype=torch.float32)
+            nn.utils.vector_to_parameters(vec, child_nn.parameters())
+
+            self.__class__(
+                self.model,
+                0,
+                child_energy,
+                self.p_reproduce,
+                self.max_energy,
+                self.max_hydration,
+                self.energy_from_food,
+                self.hydration_from_water,
+                self.cell,
+                self.vision_range,
+                self.vision_angle,
+                self.vision,
+                self.heading,
+                self.prev_opponent_vec,
+                child_nn
+            )
+
+    def move_in_direction(self, dirs):
+
+        if not isinstance(dirs, torch.Tensor):
+            dirs = torch.tensor(dirs, dtype=torch.float32)
+
+        # Determine valid directions (absolute mapping)
+        valid_mask = self._valid_move_mask()
+        # convert mask to tensor
+        mask_tensor = torch.tensor([1.0 if v else 0.0 for v in valid_mask], dtype=torch.float32)
+
+        # If no directions are valid, fallback to any non-water neighbor (random)
+        if mask_tensor.sum().item() == 0:
+            candidates = [cell for cell in self.cell.neighborhood
+                          if any(isinstance(o, WaterPatch) for o in cell.agents)]
+            if not candidates:
+                return
+            chosen = self.random.choice(candidates)
+            self.move_to(chosen)
+            return
+
+        # Mask invalid logits by assigning a large negative value so softmax ~ 0
+        LARGE_NEG = -1e9
+        dirs_masked = dirs.clone()
+        for i, valid in enumerate(valid_mask):
+            if not valid:
+                # keep shape-safe
+                dirs_masked[i] = LARGE_NEG
+
+        probs = func.softmax(dirs_masked, dim=0)
+        # Sample one direction index
+        try:
+            idx = torch.multinomial(probs, 1).item()
+        except Exception:
+            # numerical fallback: argmax
+            idx = int(torch.argmax(probs).item())
+
+        target_cell = self.get_cell_in_direction(idx)
+        if target_cell is None:
+            # If something went wrong, fallback to random valid neighbor
+            candidates = [cell for cell in self.cell.neighborhood
+                          if any(isinstance(o, WaterPatch) for o in cell.agents)]
+            if not candidates:
+                return
+            chosen = self.random.choice(candidates)
+            self.move_to(chosen)
+            return
         
+        self.move_to(target_cell)
 
 
 #---Predators---
-class LandPredator(Animal):
+class Predator(Animal):
+
+    def __init__(
+        self,
+        model,
+        age,
+        energy,
+        hydration,
+        p_reproduce,
+        max_energy,
+        max_hydration,
+        energy_from_food,
+        hydration_from_water,
+        cell,
+        nn,
+        vision_range=6,
+        vision_angle=90,
+        vision=[],
+        heading=(0,1),
+        prev_opponent_vec=(0,0)
+    ):
+        super().__init__(
+            model=model,
+            energy=energy,
+            age=age,
+            hydration=hydration,
+            p_reproduce=p_reproduce,
+            max_energy=max_energy,
+            max_hydration=max_hydration,
+            energy_from_food=energy_from_food,
+            hydration_from_water=hydration_from_water,
+            cell=cell,
+            vision_range=vision_range,
+            vision_angle=vision_angle,
+            nn = nn
+        )
+
+        self.prey_eaten = 0
+        self.chase = 0
+
+    def closest_prey(self):
+        visible = self.vision
+
+        cells_with_prey = [cell for cell in visible
+            if any(isinstance(obj, Prey) for obj in cell.agents)]
+
+        if cells_with_prey:
+            closest_cell = min(cells_with_prey, key=lambda c: self.cell_distance(self.cell, c))
+            min_dist = self.cell_distance(self.cell, closest_cell)
+            count = len(cells_with_prey)
+
+            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
+        else:
+            return (0, 0, self.vision_range, 0)
+
+
+class LandPredator(Predator):
     """A land predator that walks around, reproduces (asexually) and eats prey."""
 
     def __init__(
@@ -556,6 +901,7 @@ class LandPredator(Animal):
         vision_angle=90,
         vision=[],
         heading=(0,1),
+        prev_opponent_vec=(0,0),
         nn=LandPredNet()
     ):
         super().__init__(
@@ -575,9 +921,9 @@ class LandPredator(Animal):
         )
 
         self.prey_eaten = 0
-        self.prey_chases = 0
-        if os.path.isfile("pred_net.pth"):
-            self.nn.load_state_dict(torch.load("pred_net.pth"))
+        self.chase = 0
+        if os.path.isfile("land_pred_net.pth"):
+            self.nn.load_state_dict(torch.load("land_pred_net.pth"))
         else:
             self.nn = LandPredNet()
             
@@ -596,9 +942,7 @@ class LandPredator(Animal):
 
         w_dx, w_dy = normalise(w_dx, w_dy)
         p_dx, p_dy = normalise(p_dx, p_dy)
-
-        if prev_prey_dist > (min_prey_dist / self.vision_range):
-            self.prey_chases += 1
+        self.prev_opponent_vec = (p_dx, p_dy)
 
         self.input_vector = [
             self.energy / self.max_energy,
@@ -615,23 +959,6 @@ class LandPredator(Animal):
             p_dy,
         ]
 
-    #---Input vector helper---
-    
-    def closest_prey(self):
-        visible = self.vision
-
-        cells_with_prey = [cell for cell in visible
-            if any(isinstance(obj, LandPrey) for obj in cell.agents)]
-
-        if cells_with_prey:
-            closest_cell = min(cells_with_prey, key=lambda c: self.cell_distance(self.cell, c))
-            min_dist = self.cell_distance(self.cell, closest_cell)
-            count = len(cells_with_prey)
-
-            return closest_cell.coordinate[0], closest_cell.coordinate[1], min_dist, count
-        else:
-            return (0, 0, self.vision_range, 0)
-
 
     def spawn_offspring(self):
 
@@ -644,8 +971,8 @@ class LandPredator(Animal):
             self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.3)
 
             child_nn = LandPredNet()
-            if os.path.isfile("pred_net.pth"):
-                child_nn.load_state_dict(torch.load("pred_net.pth"))
+            if os.path.isfile("land_pred_net.pth"):
+                child_nn.load_state_dict(torch.load("land_pred_net.pth"))
 
             genome = self.get_genome()
 
@@ -672,6 +999,7 @@ class LandPredator(Animal):
                 self.vision_angle,
                 self.vision,
                 self.heading,
+                self.prev_opponent_vec,
                 child_nn,
             )
 
@@ -683,13 +1011,14 @@ class LandPredator(Animal):
         
         prey = []
         for cell in nearby_cells:
-            prey.extend([a for a in cell.agents if isinstance(a, LandPrey)])
+            prey.extend([a for a in cell.agents if isinstance(a, Prey)])
 
         if prey:  # If there are any prey present
             prey_to_eat = self.random.choice(prey)
             self.energy = min(self.energy + self.energy_from_food, self.max_energy)
-            self.prey_eaten += 1
+            self.prey_eaten += (1 - self.energy / self.max_energy) 
             self.model.total_kills += 1
+            #print(f"{prey_to_eat.__class__} eaten by {self.__class__}")
             prey_to_eat.remove()
 
     
@@ -704,6 +1033,146 @@ class LandPredator(Animal):
         idx = torch.multinomial(probs, 1).item()
         self.move_to(candidates[idx])
 
+
+
+class WaterPredator(Predator):
+
+    def __init__(
+        self,
+        model,
+        age,
+        energy,
+        p_reproduce,
+        max_energy,
+        max_hydration,
+        energy_from_food,
+        hydration_from_water,
+        cell,
+        vision_range=6,
+        vision_angle=90,
+        vision=[],
+        heading=(0,1),
+        prev_opponent_vec=(0,0),
+        nn=WaterPredNet()
+    ):
+        super().__init__(
+            model=model,
+            energy=energy,
+            age=age,
+            hydration=max_hydration,
+            p_reproduce=p_reproduce,
+            max_energy=max_energy,
+            max_hydration=max_hydration,
+            energy_from_food=energy_from_food,
+            hydration_from_water=hydration_from_water,
+            cell=cell,
+            vision_range=vision_range,
+            vision_angle=vision_angle,
+            nn = nn
+        )
+
+        self.prey_eaten = 0
+        self.chase = 0
+
+        if os.path.isfile("water_pred_net.pth"):
+            self.nn.load_state_dict(torch.load("water_pred_net.pth"))
+        else:
+            self.nn = WaterPredNet()
+
+
+    def update_input_vector(self):
+
+        if self.input_vector:
+            prev_prey_dist = self.input_vector[2]
+        else:
+            prev_prey_dist = self.vision_range
+
+        p_dx, p_dy, min_prey_dist, n_prey = self.closest_prey()
+        n_visible_cells = max(1, len(self.visible_cells()))
+
+        p_dx, p_dy = normalise(p_dx, p_dy)
+        self.prev_opponent_vec = (p_dx, p_dy)
+
+        self.input_vector = [
+            self.energy / self.max_energy,
+
+            min_prey_dist / self.vision_range,
+            n_prey / n_visible_cells,
+            p_dx,
+            p_dy,
+        ]
+
+
+    def feed(self):
+        """If possible, eat prey at current location."""
+
+        nearby_cells = [self.cell] + list(self.cell.neighborhood)
+        
+        prey = []
+        for cell in nearby_cells:
+            prey.extend([a for a in cell.agents if isinstance(a, Prey)])
+
+        if prey:  # If there are any prey present
+            prey_to_eat = self.random.choice(prey)
+            self.energy = min(self.energy + self.energy_from_food, self.max_energy)
+            self.prey_eaten += (1 - self.energy / self.max_energy) 
+            self.model.total_kills += 1
+            prey_to_eat.remove()
+
+
+    def spawn_offspring(self):
+
+        if self.random.random() < self.p_reproduce and self.energy >= self.max_energy * 0.7 and self.age > MATURITY:
+
+            self.rep_count += 1
+
+            split_ratio = 0.3 
+            child_energy = max(self.energy * split_ratio, self.max_energy * 0.3)
+            self.energy = max(self.energy * (1 - split_ratio), self.max_energy * 0.3)
+
+            child_nn = WaterPredNet()
+            if os.path.isfile("water_pred_net.pth"):
+                child_nn.load_state_dict(torch.load("water_pred_net.pth"))
+
+            genome = self.get_genome()
+
+            mut_rate = 0.02
+            mut_str = 0.1
+            mask = np.random.rand(genome.size) < mut_rate
+            genome[mask] += np.random.normal(0, mut_str, size=mask.sum())
+
+            vec = torch.tensor(genome, dtype=torch.float32)
+            nn.utils.vector_to_parameters(vec, child_nn.parameters())
+
+            self.__class__(
+                self.model,
+                0,
+                child_energy,
+                self.p_reproduce,
+                self.max_energy,
+                self.max_hydration,
+                self.energy_from_food,
+                self.hydration_from_water,
+                self.cell,
+                self.vision_range,
+                self.vision_angle,
+                self.vision,
+                self.heading,
+                self.prev_opponent_vec,
+                child_nn,
+            )
+
+
+    def move_in_direction(self, dirs):
+
+        candidates = [cell for cell in self.cell.neighborhood
+                    if any(isinstance(o, WaterPatch) for o in cell.agents)]
+        if not candidates:
+            return
+
+        probs = func.softmax(dirs[:len(candidates)], dim=0)
+        idx = torch.multinomial(probs, 1).item()
+        self.move_to(candidates[idx])
 
 
 #---Map/terrain agents---
